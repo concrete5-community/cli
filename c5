@@ -1,0 +1,125 @@
+#!/bin/sh
+
+# Look for the concrete5 web root
+# Output:
+#    the full path of the web root (including leading /)
+# Return:
+#    0: success
+#    1: directory not found
+c5_getWebroot () {
+    __C5_TMPVAR=`pwd`
+    __C5_TMPVAR="${__C5_TMPVAR%/}/"
+    if test -f "${__C5_TMPVAR}concrete/dispatcher.php"; then
+        printf '%s' "${__C5_TMPVAR}"
+        unset -v __C5_TMPVAR
+        return 0
+    fi
+    if test -f "${__C5_TMPVAR}public/concrete/dispatcher.php"; then
+        printf '%s' "${__C5_TMPVAR}public/"
+        unset -v __C5_TMPVAR
+        return 0
+    fi
+    if test -f "${__C5_TMPVAR}web/concrete/dispatcher.php"; then
+        printf '%s' "${__C5_TMPVAR}web/"
+        unset -v __C5_TMPVAR
+        return 0
+    fi
+    while :; do
+        __C5_TMPVAR=$(dirname "$__C5_TMPVAR")
+        __C5_TMPVAR="${__C5_TMPVAR%/}/"
+        if test -f "${__C5_TMPVAR}concrete/dispatcher.php"; then
+            printf '%s' "${__C5_TMPVAR}"
+            unset -v __C5_TMPVAR
+            return 0
+        fi
+        if test "$__C5_TMPVAR" = '/'; then
+            unset -v __C5_TMPVAR
+            echo 'Unable to find the concrete5 web root directory' >&2
+            return 1
+        fi
+    done
+}
+
+# Look for the concrete5 CLI entry point path
+# Output:
+#    the full path of the concrete5 CLI entry point
+# Return:
+#    0: success
+#    1: concrete5 web root not found
+#    2: CLI entry point not found
+c5_getCliEntrypoint () {
+    __C5_TMPVAR=`c5_getWebroot` || __C5_TMPVAR=''
+    if test -z "$__C5_TMPVAR"; then
+        unset -v __C5_TMPVAR
+        return 1
+    fi
+    if test -f "${__C5_TMPVAR}concrete/bin/concrete5.php"; then
+        printf '%sconcrete/bin/concrete5.php' "${__C5_TMPVAR}"
+        unset -v __C5_TMPVAR
+        return 0
+    fi
+    if test -f "${__C5_TMPVAR}concrete/bin/concrete5"; then
+        printf '%sconcrete/bin/concrete5' "${__C5_TMPVAR}"
+        unset -v __C5_TMPVAR
+        return 0
+    fi
+    unset -v __C5_TMPVAR
+    echo 'Unable to find the concrete5 CLI entry point' >&2
+    return 2
+}
+
+# Execute a concrete5 CLI command, detecting the entry point from the current directory
+# Output:
+#    the output of the CLI command
+# Return:
+#    255: if the CLI entry point could not be found
+#    other values: the result of the CLI command
+c5 () (
+    __C5_TMPVAR=`c5_getCliEntrypoint` || __C5_TMPVAR=''
+    if test -z "$__C5_TMPVAR"; then
+        return 255
+    fi
+    if test -z "$C5_SUDOAS"; then
+        "$__C5_TMPVAR" "$@"
+        return $?
+    fi
+    sudo -u "$C5_SUDOAS" -- "$__C5_TMPVAR" "$@"
+    return $?
+)
+
+# Check if this file has been "sourced".
+# Greatly inspired by https://stackoverflow.com/a/28776166
+__C5_TMPVAR=0
+if test -n "${ZSH_EVAL_CONTEXT:-}"; then
+    # zsh - Z-Shell
+    case "$ZSH_EVAL_CONTEXT" in
+        *:file)
+            __C5_TMPVAR=1
+            ;;
+        *::file:cmdsubst)
+            __C5_TMPVAR=1
+            ;;
+    esac
+elif test -n "${KSH_VERSION:-}"; then 
+    # kzh - Korn shell
+    if test $(cd -- "$(dirname -- "$0")" && printf '%s' "${PWD%/}/")$(basename -- "$0") != "${.sh.file}"; then
+        __C5_TMPVAR=1
+    fi
+elif test -n "${BASH_VERSION:-}"; then
+    # bash - Bourne Again Shell
+    (return 2>/dev/null) && __C5_TMPVAR=1 || true
+else
+    # other
+    case "$0" in
+        sh|*ash)
+            __C5_TMPVAR=1
+            ;;
+    esac
+fi
+
+if test $__C5_TMPVAR -eq 0; then
+    unset -v __C5_TMPVAR
+    c5 "$@"
+else
+    unset -v __C5_TMPVAR
+fi
