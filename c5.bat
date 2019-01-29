@@ -8,7 +8,7 @@ if errorlevel 1 (
 )
 setlocal disabledelayedexpansion
 php -d short_open_tag=On "%C5_BIN%" %*
-exit /b 0
+exit /b %ERRORLEVEL%
 
 :GET_C5_BIN
 call :GET_C5_ROOT
