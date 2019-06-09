@@ -1,0 +1,1447 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * Wrapper around composer.
+ */
+class ComposerRunner
+{
+    /**
+     * @var Arguments
+     */
+    private $arguments;
+
+    /**
+     * @var CoreVersions
+     */
+    private $coreVersions;
+
+    /**
+     * @var VersionParser
+     */
+    private $versionParser;
+
+    /**
+     * Initialize the instance.
+     *
+     * @param Arguments|null     $arguments
+     * @param CoreVersions|null  $coreVersions
+     * @param VersionParser|null $versionParser
+     */
+    public function __construct(Arguments $arguments = null, CoreVersions $coreVersions = null, VersionParser $versionParser = null)
+    {
+        $this->arguments = $arguments ?: new Arguments();
+        $this->coreVersions = $coreVersions ?: new CoreVersions();
+        $this->versionParser = $versionParser ?: new VersionParser();
+    }
+
+    /**
+     * Execute composer.
+     *
+     * @return int
+     */
+    public function run()
+    {
+        $packageInfo = new PackageInfo($this->arguments->getPackageDirectory(), $this->coreVersions, $this->versionParser);
+        $minimumCoreVersion = $packageInfo->getMinimumCoreVersion();
+        $corePackages = $this->coreVersions->getPackagesForCoreVersion($minimumCoreVersion);
+        $newJsonData = $this->patchComposerJson($minimumCoreVersion, $packageInfo->getComposerJsonData(), $corePackages);
+
+        return $this->runWith($newJsonData);
+    }
+
+    /**
+     * Patch the contents of the package composer.json file.
+     *
+     * @param string $coreVersion             the core version
+     * @param array  $packageComposerJsonData the decoded contents of the package composer.json file
+     * @param array  $corePackages            the list of composer packages and their versions as provided by a specific core version
+     *
+     * @return array
+     */
+    private function patchComposerJson($coreVersion, array $packageComposerJsonData, array $corePackages)
+    {
+        $replacements = [
+            PackageInfo::CORE_PACKAGE_HANDLE => $coreVersion,
+        ] + $corePackages;
+        if (isset($packageComposerJsonData['replace'])) {
+            $originalPackageReplacement = $packageComposerJsonData['replace'];
+            if (!is_array($originalPackageReplacement)) {
+                throw new RuntimeException("The 'replace' key of the package controller.json file must be an array");
+            }
+            $replacements = $originalPackageReplacement + $replacements;
+        }
+        $packageComposerJsonData['replace'] = $replacements;
+
+        return $packageComposerJsonData;
+    }
+
+    /**
+     * Execute composer using a composer.json file with the specified contents.
+     *
+     * @param array $composerJsonData
+     *
+     * @return int the composer exit code
+     */
+    private function runWith(array $composerJsonData)
+    {
+        $prefix = $this->arguments->getPackageDirectory().'/';
+        for ($i = 0;; ++$i) {
+            $basename = "composer-patched-{$i}";
+            $patchedComposerJsonFileName = "{$basename}.json";
+            $patchedComposerJsonFile = $prefix."{$basename}.json";
+            $patchedComposerLockFile = $prefix."{$basename}.lock";
+            if (!file_exists($patchedComposerJsonFile) && !file_exists($patchedComposerLockFile)) {
+                break;
+            }
+        }
+        $prevComposerEnv = getenv('COMPOSER');
+        file_put_contents($patchedComposerJsonFile, json_encode($composerJsonData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        try {
+            putenv("COMPOSER={$patchedComposerJsonFileName}");
+            echo "\nCOMPOSER=$patchedComposerJsonFileName\n";
+            $cmd = 'composer';
+            foreach ($this->arguments->getList() as $arg) {
+                $cmd .= ' '.escapeshellarg($arg);
+            }
+            $rc = -1;
+            echo "\n$cmd\n";
+            passthru($cmd, $rc);
+
+            return $rc;
+        } finally {
+            unlink($patchedComposerJsonFile);
+            if (is_file($patchedComposerLockFile)) {
+                unlink($patchedComposerLockFile);
+            }
+            if ($prevComposerEnv === false) {
+                putenv('COMPOSER');
+            } else {
+                putenv("COMPOSER={$prevComposerEnv}");
+            }
+        }
+    }
+}
+
+/**
+ * Handle the command line arguments.
+ */
+class Arguments
+{
+    /**
+     * The package directory (.../packages/<package_handle>).
+     *
+     * @var string
+     */
+    private $packageDirectory;
+
+    /**
+     * The whole list of command arguments.
+     *
+     * @var string[]
+     */
+    private $list = [];
+
+    /**
+     * Initialize the instance.
+     *
+     * @param string[]|null $argv the list of command arguments to be parsed (if NULL we'll use the current CLI arguments)
+     */
+    public function __construct(array $argv = null)
+    {
+        if ($argv === null) {
+            $argv = $_SERVER['argv'];
+        }
+        $packageDirectory = null;
+        $m = null;
+        array_shift($argv);
+        while (isset($argv[0])) {
+            $arg = array_shift($argv);
+            $this->list[] = $arg;
+            if ($arg === '-d') {
+                if (!isset($argv[0])) {
+                    throw new RuntimeException("Missing parameter after {$arg}");
+                }
+                $packageDirectory = $argv[0];
+            } elseif (preg_match('/^--working-dir=(.*)$/', $arg, $m)) {
+                $packageDirectory = $m[1];
+            }
+        }
+        if ($packageDirectory === null) {
+            $packageDirectory = getcwd();
+        }
+        $tmp = realpath($packageDirectory);
+        if ($tmp === false || !is_dir($tmp)) {
+            throw new RuntimeException("Unable to find the directory {$packageDirectory}");
+        }
+        $this->packageDirectory = rtrim(str_replace(DIRECTORY_SEPARATOR, '/', $tmp), '/');
+    }
+
+    /**
+     * Get the package directory ('/' as directory separator, without leading '/').
+     *
+     * @return string
+     */
+    public function getPackageDirectory()
+    {
+        return $this->packageDirectory;
+    }
+
+    /**
+     * Get the whole list of command arguments.
+     *
+     * @return string[]
+     */
+    public function getList()
+    {
+        return $this->list;
+    }
+}
+
+/**
+ * Handle the core versions and the related data.
+ */
+class CoreVersions
+{
+    /**
+     * The list of versions that are not tagged.
+     *
+     * @var array
+     */
+    private static $missingTags = [
+        '5.7.5.13' => '531ca03cb0e183f9cfef453bc7f7557c55ba1fac',
+    ];
+
+    /**
+     * The list of versions tagged in the repository.
+     *
+     * @var string[]|null
+     */
+    private static $taggedVersions;
+
+    /**
+     * The list of composer packages and their normalized version, for every core version.
+     *
+     * @var array
+     */
+    private static $packagesForCoreVersions = [];
+
+    /**
+     * Get the list of versions tagged in the repository.
+     *
+     * @return string[]
+     */
+    private static function getTaggedVersions()
+    {
+        if (self::$taggedVersions === null) {
+            $output = [];
+            $rc = -1;
+            exec('git ls-remote --tags https://github.com/concrete5/concrete5.git', $output, $rc);
+            if ($rc !== 0) {
+                throw new RuntimeException("Failed to retrieve the list of available core versions:\n".trim(implode("\n", $output)));
+            }
+            $list = [];
+            $m = null;
+            foreach ($output as $line) {
+                if (trim($line) === '') {
+                    continue;
+                }
+                if (!preg_match('%^[a-fA-F0-9]{40}[ \t]+refs/tags/(.*?)(?:\^\{\})?$%', $line, $m)) {
+                    throw new RuntimeException("Failed to parse the line\n{$line}");
+                }
+                if (!in_array($m[1], $list, true) && preg_match('/^\d+(\.\d+)*$/', $m[1])) {
+                    $list[] = $m[1];
+                }
+            }
+            if ($list === []) {
+                throw new RuntimeException("Failed to retrieve the list of available core versions:\n".trim(implode("\n", $output)));
+            }
+            self::$taggedVersions = $list;
+        }
+
+        return self::$taggedVersions;
+    }
+
+    /**
+     * Get the list of available core versions (sorted from the oldest to the newest).
+     *
+     * @return string
+     */
+    public function getList()
+    {
+        $result = $this->getTaggedVersions();
+        foreach (array_keys(self::$missingTags) as $version) {
+            if (!in_array($version, $result, true)) {
+                $result[] = $version;
+            }
+        }
+        usort($result, 'version_compare');
+
+        return $result;
+    }
+
+    /**
+     * Get the list of composer packages and their normalized version, for a specific core version.
+     *
+     * @param string $coreVersion
+     *
+     * @return array
+     */
+    public function getPackagesForCoreVersion($coreVersion)
+    {
+        if (!isset(self::$packagesForCoreVersions[$coreVersion])) {
+            self::$packagesForCoreVersions[$coreVersion] = $this->fetchPackagesForCoreVersion($coreVersion);
+        }
+
+        return self::$packagesForCoreVersions[$coreVersion];
+    }
+
+    /**
+     * Fetch the remote list of composer packages and their normalized version, for a specific core version.
+     *
+     * @param string $coreVersion
+     *
+     * @return array
+     */
+    private function fetchPackagesForCoreVersion($coreVersion)
+    {
+        $lockFileJsonUrl = $this->getLockFileUrl($coreVersion);
+        $context = stream_context_create(
+            [
+                'http' => [
+                    'method' => 'GET',
+                    'follow_location' => 1,
+                    'max_redirects' => 20,
+                    'ignore_errors' => false,
+                ],
+            ]
+        );
+        $lockFileJson = file_get_contents($lockFileJsonUrl, false, $context);
+        $lockFileData = json_decode($lockFileJson, true);
+        if (!is_array($lockFileData)) {
+            throw new RuntimeException("Invalid contents of {$lockFileJsonUrl} (not an array)");
+        }
+        if (!isset($lockFileData['packages']) || !is_array($lockFileData['packages'])) {
+            throw new RuntimeException("Invalid contents of {$lockFileJsonUrl} (missing package list");
+        }
+        $result = [];
+        foreach ($lockFileData['packages'] as $package) {
+            if (!array($package)) {
+                throw new RuntimeException("Invalid contents of {$lockFileJsonUrl} (a package is not an array)");
+            }
+            if (!isset($package['name']) || !is_string($package['name']) || $package['name'] === '') {
+                throw new RuntimeException("Invalid contents of {$lockFileJsonUrl} (a package name is missing)");
+            }
+            $name = strtolower($package['name']);
+            if (isset($result[$name])) {
+                throw new RuntimeException("Invalid contents of {$lockFileJsonUrl} (duplicated package name)");
+            }
+            if (!isset($package['version']) || !is_string($package['version']) || $package['version'] === '') {
+                throw new RuntimeException("Invalid contents of {$lockFileJsonUrl} (a package version is missing)");
+            }
+            $result[$name] = $package['version'];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Get the URL of the composer.lock file for a specific core version.
+     *
+     * @param string $coreVersion
+     *
+     * @return string
+     */
+    private function getLockFileUrl($coreVersion)
+    {
+        if (in_array($coreVersion, $this->getTaggedVersions(), true)) {
+            $commit = '';
+        } elseif (isset(self::$missingTags[$coreVersion])) {
+            $commit = self::$missingTags[$coreVersion];
+        } else {
+            throw new RuntimeException("Unrecognized core version: {$coreVersion}");
+        }
+        list($mayor) = explode('.', $coreVersion, 2);
+        $result = 'https://raw.githubusercontent.com/concrete5/concrete5/';
+        if ($commit === '') {
+            $result .= $coreVersion;
+        } else {
+            $result .= $commit;
+        }
+        if ($mayor === '5') {
+            $result .= '/web/concrete/composer.lock';
+        } else {
+            $result .= '/composer.lock';
+        }
+
+        return $result;
+    }
+}
+
+/**
+ * Handle the info about the concrete5 package.
+ */
+class PackageInfo
+{
+    /**
+     * The name of the dependencies key of the composer.json file.
+     *
+     * @var string
+     */
+    const COMPOSERJSON_KEY_REQUIRE = 'require';
+
+    /**
+     * The name of the development dependencies key of the composer.json file.
+     *
+     * @var string
+     */
+    const COMPOSERJSON_KEY_REQUIREDEV = 'require-dev';
+
+    /**
+     * The packagist handle of the concrete5 core.
+     *
+     * @var string
+     */
+    const CORE_PACKAGE_HANDLE = 'concrete5/core';
+
+    /**
+     * The package directory ('/' as directory separator, without leading '/').
+     *
+     * @var string
+     */
+    private $packageDirectory;
+
+    /**
+     * @var CoreVersions
+     */
+    private $coreVersions;
+
+    /**
+     * @var VersionParser
+     */
+    private $versionParser;
+
+    /**
+     * @var array|null
+     */
+    private $jsonData;
+
+    /**
+     * @var string
+     * @var VersionParser|null $versionParser
+     */
+    public function __construct($packageDirectory, CoreVersions $coreVersions = null, VersionParser $versionParser = null)
+    {
+        $this->packageDirectory = rtrim(str_replace(DIRECTORY_SEPARATOR, '/', $packageDirectory), '/');
+        $this->coreVersions = $coreVersions === null ? new CoreVersions() : $coreVersions;
+        $this->versionParser = $versionParser === null ? new VersionParser() : $versionParser;
+    }
+
+    /**
+     * Get the minimum core version.
+     *
+     * @return string
+     */
+    public function getMinimumCoreVersion()
+    {
+        $deps = $this->getDependencies(false);
+        if (!array_key_exists(self::CORE_PACKAGE_HANDLE, $deps)) {
+            throw new RuntimeException("The '".self::COMPOSERJSON_KEY_REQUIRE."' section of the package composer.json is missing, or it does not contain the '".self::CORE_PACKAGE_HANDLE."' key");
+        }
+        $stringConstraints = $deps[self::CORE_PACKAGE_HANDLE];
+        if (!is_string($stringConstraints)) {
+            throw new RuntimeException("The value of the '".self::CORE_PACKAGE_HANDLE."' key of the '".self::COMPOSERJSON_KEY_REQUIRE."' section of the package composer.json must be a string");
+        }
+        if ($stringConstraints === '') {
+            throw new RuntimeException("The value of the '".self::CORE_PACKAGE_HANDLE."' key of the '".self::COMPOSERJSON_KEY_REQUIRE."' section of the package composer.json is empty");
+        }
+        $constraints = $this->versionParser->parseConstraints($stringConstraints);
+        foreach ($this->coreVersions->getList() as $coreVersion) {
+            $coreVersionNormalized = $this->versionParser->normalize($coreVersion);
+            if ($constraints->matches(new Constraint('==', $coreVersionNormalized))) {
+                return $coreVersion;
+            }
+        }
+        throw new RuntimeException("Failed to determine a core version that matches {$constraints}");
+    }
+
+    /**
+     * Get the contents of the "require", "require-dev" section of the composer.json file.
+     *
+     * @param bool $dev FALSE: "require" section, TRUE: "require-dev" section
+     *
+     * @return array
+     */
+    private function getDependencies($dev)
+    {
+        $data = $this->getComposerJsonData();
+        $key = $dev ? self::COMPOSERJSON_KEY_REQUIREDEV : self::COMPOSERJSON_KEY_REQUIRE;
+        if (!array_key_exists($key, $data)) {
+            return [];
+        }
+        if (!is_array($data[$key])) {
+            throw new RuntimeException("The '{$key}' section of the package composer.json is not an array");
+        }
+
+        return $data[$key];
+    }
+
+    /**
+     * Get the data defined in the composer.json file.
+     *
+     * @return array
+     */
+    public function getComposerJsonData()
+    {
+        if ($this->jsonData === null) {
+            $file = "{$this->packageDirectory}/composer.json";
+            if (!is_file($file)) {
+                throw new RuntimeException("Unable to find the file {$file}");
+            }
+            $data = json_decode(file_get_contents($file), true);
+            if (!is_array($data)) {
+                throw new RuntimeException("Failed to decode the file {$data}");
+            }
+            $this->jsonData = $data;
+        }
+
+        return $this->jsonData;
+    }
+}
+
+/**
+ * Interface copied from (c) Composer <https://github.com/composer>.
+ *
+ * License: https://github.com/composer/semver/blob/1.5.0/LICENSE
+ */
+interface ConstraintInterface
+{
+    /**
+     * @return string
+     */
+    public function __toString();
+
+    /**
+     * @param ConstraintInterface $provider
+     *
+     * @return bool
+     */
+    public function matches(self $provider);
+
+    /**
+     * @return string
+     */
+    public function getPrettyString();
+}
+
+/**
+ * Class copied from (c) Composer <https://github.com/composer>.
+ *
+ * License: https://github.com/composer/semver/blob/1.5.0/LICENSE
+ */
+class Constraint implements ConstraintInterface
+{
+    /* operator integer values */
+    const OP_EQ = 0;
+    const OP_LT = 1;
+    const OP_LE = 2;
+    const OP_GT = 3;
+    const OP_GE = 4;
+    const OP_NE = 5;
+
+    /** @var string */
+    protected $operator;
+
+    /** @var string */
+    protected $version;
+
+    /** @var string */
+    protected $prettyString;
+
+    /**
+     * Operator to integer translation table.
+     *
+     * @var array
+     */
+    private static $transOpStr = [
+        '=' => self::OP_EQ,
+        '==' => self::OP_EQ,
+        '<' => self::OP_LT,
+        '<=' => self::OP_LE,
+        '>' => self::OP_GT,
+        '>=' => self::OP_GE,
+        '<>' => self::OP_NE,
+        '!=' => self::OP_NE,
+    ];
+
+    /**
+     * Integer to operator translation table.
+     *
+     * @var array
+     */
+    private static $transOpInt = [
+        self::OP_EQ => '==',
+        self::OP_LT => '<',
+        self::OP_LE => '<=',
+        self::OP_GT => '>',
+        self::OP_GE => '>=',
+        self::OP_NE => '!=',
+    ];
+
+    /**
+     * Sets operator and version to compare with.
+     *
+     * @param string $operator
+     * @param string $version
+     *
+     * @throws \InvalidArgumentException if invalid operator is given
+     */
+    public function __construct($operator, $version)
+    {
+        if (!isset(self::$transOpStr[$operator])) {
+            throw new \InvalidArgumentException(sprintf(
+                'Invalid operator "%s" given, expected one of: %s',
+                $operator,
+                implode(', ', self::getSupportedOperators())
+                ));
+        }
+
+        $this->operator = self::$transOpStr[$operator];
+        $this->version = $version;
+    }
+
+    /**
+     * @return string
+     */
+    public function __toString()
+    {
+        return self::$transOpInt[$this->operator].' '.$this->version;
+    }
+
+    /**
+     * @param ConstraintInterface $provider
+     *
+     * @return bool
+     */
+    public function matches(ConstraintInterface $provider)
+    {
+        if ($provider instanceof $this) {
+            return $this->matchSpecific($provider);
+        }
+
+        // turn matching around to find a match
+        return $provider->matches($this);
+    }
+
+    /**
+     * @param string $prettyString
+     */
+    public function setPrettyString($prettyString)
+    {
+        $this->prettyString = $prettyString;
+    }
+
+    /**
+     * @return string
+     */
+    public function getPrettyString()
+    {
+        if ($this->prettyString) {
+            return $this->prettyString;
+        }
+
+        return $this->__toString();
+    }
+
+    /**
+     * Get all supported comparison operators.
+     *
+     * @return array
+     */
+    public static function getSupportedOperators()
+    {
+        return array_keys(self::$transOpStr);
+    }
+
+    /**
+     * @param string $a
+     * @param string $b
+     * @param string $operator
+     * @param bool   $compareBranches
+     *
+     * @throws \InvalidArgumentException if invalid operator is given
+     *
+     * @return bool
+     */
+    public function versionCompare($a, $b, $operator, $compareBranches = false)
+    {
+        if (!isset(self::$transOpStr[$operator])) {
+            throw new \InvalidArgumentException(sprintf(
+                'Invalid operator "%s" given, expected one of: %s',
+                $operator,
+                implode(', ', self::getSupportedOperators())
+                ));
+        }
+
+        $aIsBranch = 'dev-' === substr($a, 0, 4);
+        $bIsBranch = 'dev-' === substr($b, 0, 4);
+
+        if ($aIsBranch && $bIsBranch) {
+            return $operator === '==' && $a === $b;
+        }
+
+        // when branches are not comparable, we make sure dev branches never match anything
+        if (!$compareBranches && ($aIsBranch || $bIsBranch)) {
+            return false;
+        }
+
+        return version_compare($a, $b, $operator);
+    }
+
+    /**
+     * @param Constraint $provider
+     * @param bool       $compareBranches
+     *
+     * @return bool
+     */
+    public function matchSpecific(self $provider, $compareBranches = false)
+    {
+        $noEqualOp = str_replace('=', '', self::$transOpInt[$this->operator]);
+        $providerNoEqualOp = str_replace('=', '', self::$transOpInt[$provider->operator]);
+
+        $isEqualOp = self::OP_EQ === $this->operator;
+        $isNonEqualOp = self::OP_NE === $this->operator;
+        $isProviderEqualOp = self::OP_EQ === $provider->operator;
+        $isProviderNonEqualOp = self::OP_NE === $provider->operator;
+
+        // '!=' operator is match when other operator is not '==' operator or version is not match
+        // these kinds of comparisons always have a solution
+        if ($isNonEqualOp || $isProviderNonEqualOp) {
+            return !$isEqualOp && !$isProviderEqualOp
+            || $this->versionCompare($provider->version, $this->version, '!=', $compareBranches);
+        }
+
+        // an example for the condition is <= 2.0 & < 1.0
+        // these kinds of comparisons always have a solution
+        if ($this->operator !== self::OP_EQ && $noEqualOp === $providerNoEqualOp) {
+            return true;
+        }
+
+        if ($this->versionCompare($provider->version, $this->version, self::$transOpInt[$this->operator], $compareBranches)) {
+            // special case, e.g. require >= 1.0 and provide < 1.0
+            // 1.0 >= 1.0 but 1.0 is outside of the provided interval
+            if ($provider->version === $this->version
+                && self::$transOpInt[$provider->operator] === $providerNoEqualOp
+                && self::$transOpInt[$this->operator] !== $noEqualOp) {
+                return false;
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+}
+
+/**
+ * Class copied from (c) Composer <https://github.com/composer>.
+ *
+ * License: https://github.com/composer/semver/blob/1.5.0/LICENSE
+ */
+class EmptyConstraint implements ConstraintInterface
+{
+    /** @var string */
+    protected $prettyString;
+
+    /**
+     * @return string
+     */
+    public function __toString()
+    {
+        return '[]';
+    }
+
+    /**
+     * @param ConstraintInterface $provider
+     *
+     * @return bool
+     */
+    public function matches(ConstraintInterface $provider)
+    {
+        return true;
+    }
+
+    /**
+     * @param $prettyString
+     */
+    public function setPrettyString($prettyString)
+    {
+        $this->prettyString = $prettyString;
+    }
+
+    /**
+     * @return string
+     */
+    public function getPrettyString()
+    {
+        if ($this->prettyString) {
+            return $this->prettyString;
+        }
+
+        return $this->__toString();
+    }
+}
+
+/**
+ * Class copied from (c) Composer <https://github.com/composer>.
+ *
+ * License: https://github.com/composer/semver/blob/1.5.0/LICENSE
+ */
+class MultiConstraint implements ConstraintInterface
+{
+    /** @var ConstraintInterface[] */
+    protected $constraints;
+
+    /** @var string */
+    protected $prettyString;
+
+    /** @var bool */
+    protected $conjunctive;
+
+    /**
+     * @param ConstraintInterface[] $constraints A set of constraints
+     * @param bool                  $conjunctive Whether the constraints should be treated as conjunctive or disjunctive
+     */
+    public function __construct(array $constraints, $conjunctive = true)
+    {
+        $this->constraints = $constraints;
+        $this->conjunctive = $conjunctive;
+    }
+
+    /**
+     * @return string
+     */
+    public function __toString()
+    {
+        $constraints = [];
+        foreach ($this->constraints as $constraint) {
+            $constraints[] = (string) $constraint;
+        }
+
+        return '['.implode($this->conjunctive ? ' ' : ' || ', $constraints).']';
+    }
+
+    /**
+     * @return ConstraintInterface[]
+     */
+    public function getConstraints()
+    {
+        return $this->constraints;
+    }
+
+    /**
+     * @return bool
+     */
+    public function isConjunctive()
+    {
+        return $this->conjunctive;
+    }
+
+    /**
+     * @return bool
+     */
+    public function isDisjunctive()
+    {
+        return !$this->conjunctive;
+    }
+
+    /**
+     * @param ConstraintInterface $provider
+     *
+     * @return bool
+     */
+    public function matches(ConstraintInterface $provider)
+    {
+        if (false === $this->conjunctive) {
+            foreach ($this->constraints as $constraint) {
+                if ($constraint->matches($provider)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        foreach ($this->constraints as $constraint) {
+            if (!$constraint->matches($provider)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param string $prettyString
+     */
+    public function setPrettyString($prettyString)
+    {
+        $this->prettyString = $prettyString;
+    }
+
+    /**
+     * @return string
+     */
+    public function getPrettyString()
+    {
+        if ($this->prettyString) {
+            return $this->prettyString;
+        }
+
+        return $this->__toString();
+    }
+}
+
+/**
+ * Class copied from (c) Composer <https://github.com/composer>.
+ *
+ * License: https://github.com/composer/semver/blob/1.5.0/LICENSE
+ */
+class VersionParser
+{
+    /**
+     * Regex to match pre-release data (sort of).
+     *
+     * Due to backwards compatibility:
+     *   - Instead of enforcing hyphen, an underscore, dot or nothing at all are also accepted.
+     *   - Only stabilities as recognized by Composer are allowed to precede a numerical identifier.
+     *   - Numerical-only pre-release identifiers are not supported, see tests.
+     *
+     *                        |--------------|
+     * [major].[minor].[patch] -[pre-release] +[build-metadata]
+     *
+     * @var string
+     */
+    private static $modifierRegex = '[._-]?(?:(stable|beta|b|RC|alpha|a|patch|pl|p)((?:[.-]?\d+)*+)?)?([.-]?dev)?';
+
+    /** @var array */
+    private static $stabilities = ['stable', 'RC', 'beta', 'alpha', 'dev'];
+
+    /**
+     * Returns the stability of a version.
+     *
+     * @param string $version
+     *
+     * @return string
+     */
+    public static function parseStability($version)
+    {
+        $version = preg_replace('{#.+$}i', '', $version);
+
+        if ('dev-' === substr($version, 0, 4) || '-dev' === substr($version, -4)) {
+            return 'dev';
+        }
+
+        preg_match('{'.self::$modifierRegex.'(?:\+.*)?$}i', strtolower($version), $match);
+        if (!empty($match[3])) {
+            return 'dev';
+        }
+
+        if (!empty($match[1])) {
+            if ('beta' === $match[1] || 'b' === $match[1]) {
+                return 'beta';
+            }
+            if ('alpha' === $match[1] || 'a' === $match[1]) {
+                return 'alpha';
+            }
+            if ('rc' === $match[1]) {
+                return 'RC';
+            }
+        }
+
+        return 'stable';
+    }
+
+    /**
+     * @param string $stability
+     *
+     * @return string
+     */
+    public static function normalizeStability($stability)
+    {
+        $stability = strtolower($stability);
+
+        return $stability === 'rc' ? 'RC' : $stability;
+    }
+
+    /**
+     * Normalizes a version string to be able to perform comparisons on it.
+     *
+     * @param string $version
+     * @param string $fullVersion optional complete version string to give more context
+     *
+     * @throws \UnexpectedValueException
+     *
+     * @return string
+     */
+    public function normalize($version, $fullVersion = null)
+    {
+        $version = trim($version);
+        if (null === $fullVersion) {
+            $fullVersion = $version;
+        }
+
+        // strip off aliasing
+        if (preg_match('{^([^,\s]++) ++as ++([^,\s]++)$}', $version, $match)) {
+            $version = $match[1];
+        }
+
+        // match master-like branches
+        if (preg_match('{^(?:dev-)?(?:master|trunk|default)$}i', $version)) {
+            return '9999999-dev';
+        }
+
+        // if requirement is branch-like, use full name
+        if ('dev-' === strtolower(substr($version, 0, 4))) {
+            return 'dev-'.substr($version, 4);
+        }
+
+        // strip off build metadata
+        if (preg_match('{^([^,\s+]++)\+[^\s]++$}', $version, $match)) {
+            $version = $match[1];
+        }
+
+        // match classical versioning
+        if (preg_match('{^v?(\d{1,5})(\.\d++)?(\.\d++)?(\.\d++)?'.self::$modifierRegex.'$}i', $version, $matches)) {
+            $version = $matches[1]
+            .(!empty($matches[2]) ? $matches[2] : '.0')
+            .(!empty($matches[3]) ? $matches[3] : '.0')
+            .(!empty($matches[4]) ? $matches[4] : '.0');
+            $index = 5;
+        // match date(time) based versioning
+        } elseif (preg_match('{^v?(\d{4}(?:[.:-]?\d{2}){1,6}(?:[.:-]?\d{1,3})?)'.self::$modifierRegex.'$}i', $version, $matches)) {
+            $version = preg_replace('{\D}', '.', $matches[1]);
+            $index = 2;
+        }
+
+        // add version modifiers if a version was matched
+        if (isset($index)) {
+            if (!empty($matches[$index])) {
+                if ('stable' === $matches[$index]) {
+                    return $version;
+                }
+                $version .= '-'.$this->expandStability($matches[$index]).(!empty($matches[$index + 1]) ? ltrim($matches[$index + 1], '.-') : '');
+            }
+
+            if (!empty($matches[$index + 2])) {
+                $version .= '-dev';
+            }
+
+            return $version;
+        }
+
+        // match dev branches
+        if (preg_match('{(.*?)[.-]?dev$}i', $version, $match)) {
+            try {
+                return $this->normalizeBranch($match[1]);
+            } catch (\Exception $e) {
+            }
+        }
+
+        $extraMessage = '';
+        if (preg_match('{ +as +'.preg_quote($version).'$}', $fullVersion)) {
+            $extraMessage = ' in "'.$fullVersion.'", the alias must be an exact version';
+        } elseif (preg_match('{^'.preg_quote($version).' +as +}', $fullVersion)) {
+            $extraMessage = ' in "'.$fullVersion.'", the alias source must be an exact version, if it is a branch name you should prefix it with dev-';
+        }
+
+        throw new \UnexpectedValueException('Invalid version string "'.$version.'"'.$extraMessage);
+    }
+
+    /**
+     * Extract numeric prefix from alias, if it is in numeric format, suitable for version comparison.
+     *
+     * @param string $branch Branch name (e.g. 2.1.x-dev)
+     *
+     * @return string|false Numeric prefix if present (e.g. 2.1.) or false
+     */
+    public function parseNumericAliasPrefix($branch)
+    {
+        if (preg_match('{^(?P<version>(\d++\\.)*\d++)(?:\.x)?-dev$}i', $branch, $matches)) {
+            return $matches['version'].'.';
+        }
+
+        return false;
+    }
+
+    /**
+     * Normalizes a branch name to be able to perform comparisons on it.
+     *
+     * @param string $name
+     *
+     * @return string
+     */
+    public function normalizeBranch($name)
+    {
+        $name = trim($name);
+
+        if (in_array($name, ['master', 'trunk', 'default'])) {
+            return $this->normalize($name);
+        }
+
+        if (preg_match('{^v?(\d++)(\.(?:\d++|[xX*]))?(\.(?:\d++|[xX*]))?(\.(?:\d++|[xX*]))?$}i', $name, $matches)) {
+            $version = '';
+            for ($i = 1; $i < 5; ++$i) {
+                $version .= isset($matches[$i]) ? str_replace(['*', 'X'], 'x', $matches[$i]) : '.x';
+            }
+
+            return str_replace('x', '9999999', $version).'-dev';
+        }
+
+        return 'dev-'.$name;
+    }
+
+    /**
+     * Parses a constraint string into MultiConstraint and/or Constraint objects.
+     *
+     * @param string $constraints
+     *
+     * @return ConstraintInterface
+     */
+    public function parseConstraints($constraints)
+    {
+        $prettyConstraint = $constraints;
+
+        if (preg_match('{^([^,\s]*?)@('.implode('|', self::$stabilities).')$}i', $constraints, $match)) {
+            $constraints = empty($match[1]) ? '*' : $match[1];
+        }
+
+        if (preg_match('{^(dev-[^,\s@]+?|[^,\s@]+?\.x-dev)#.+$}i', $constraints, $match)) {
+            $constraints = $match[1];
+        }
+
+        $orConstraints = preg_split('{\s*\|\|?\s*}', trim($constraints));
+        $orGroups = [];
+        foreach ($orConstraints as $constraints) {
+            $andConstraints = preg_split('{(?<!^|as|[=>< ,]) *(?<!-)[, ](?!-) *(?!,|as|$)}', $constraints);
+            if (count($andConstraints) > 1) {
+                $constraintObjects = [];
+                foreach ($andConstraints as $constraint) {
+                    foreach ($this->parseConstraint($constraint) as $parsedConstraint) {
+                        $constraintObjects[] = $parsedConstraint;
+                    }
+                }
+            } else {
+                $constraintObjects = $this->parseConstraint($andConstraints[0]);
+            }
+
+            if (1 === count($constraintObjects)) {
+                $constraint = $constraintObjects[0];
+            } else {
+                $constraint = new MultiConstraint($constraintObjects);
+            }
+
+            $orGroups[] = $constraint;
+        }
+
+        if (1 === count($orGroups)) {
+            $constraint = $orGroups[0];
+        } elseif (2 === count($orGroups)
+            // parse the two OR groups and if they are contiguous we collapse
+            // them into one constraint
+            && $orGroups[0] instanceof MultiConstraint
+            && $orGroups[1] instanceof MultiConstraint
+            && 2 === count($orGroups[0]->getConstraints())
+            && 2 === count($orGroups[1]->getConstraints())
+            && ($a = (string) $orGroups[0])
+            && substr($a, 0, 3) === '[>=' && (false !== ($posA = strpos($a, '<', 4)))
+            && ($b = (string) $orGroups[1])
+            && substr($b, 0, 3) === '[>=' && (false !== ($posB = strpos($b, '<', 4)))
+            && substr($a, $posA + 2, -1) === substr($b, 4, $posB - 5)
+            ) {
+            $constraint = new MultiConstraint([
+                    new Constraint('>=', substr($a, 4, $posA - 5)),
+                    new Constraint('<', substr($b, $posB + 2, -1)),
+                ]);
+        } else {
+            $constraint = new MultiConstraint($orGroups, false);
+        }
+
+        $constraint->setPrettyString($prettyConstraint);
+
+        return $constraint;
+    }
+
+    /**
+     * @param string $constraint
+     *
+     * @throws \UnexpectedValueException
+     *
+     * @return array
+     */
+    private function parseConstraint($constraint)
+    {
+        if (preg_match('{^([^,\s]+?)@('.implode('|', self::$stabilities).')$}i', $constraint, $match)) {
+            $constraint = $match[1];
+            if ($match[2] !== 'stable') {
+                $stabilityModifier = $match[2];
+            }
+        }
+
+        if (preg_match('{^v?[xX*](\.[xX*])*$}i', $constraint)) {
+            return [new EmptyConstraint()];
+        }
+
+        $versionRegex = 'v?(\d++)(?:\.(\d++))?(?:\.(\d++))?(?:\.(\d++))?'.self::$modifierRegex.'(?:\+[^\s]+)?';
+
+        // Tilde Range
+        //
+        // Like wildcard constraints, unsuffixed tilde constraints say that they must be greater than the previous
+        // version, to ensure that unstable instances of the current version are allowed. However, if a stability
+        // suffix is added to the constraint, then a >= match on the current version is used instead.
+        if (preg_match('{^~>?'.$versionRegex.'$}i', $constraint, $matches)) {
+            if (substr($constraint, 0, 2) === '~>') {
+                throw new \UnexpectedValueException(
+                    'Could not parse version constraint '.$constraint.': '.
+                    'Invalid operator "~>", you probably meant to use the "~" operator'
+                    );
+            }
+
+            // Work out which position in the version we are operating at
+            if (isset($matches[4]) && '' !== $matches[4] && null !== $matches[4]) {
+                $position = 4;
+            } elseif (isset($matches[3]) && '' !== $matches[3] && null !== $matches[3]) {
+                $position = 3;
+            } elseif (isset($matches[2]) && '' !== $matches[2] && null !== $matches[2]) {
+                $position = 2;
+            } else {
+                $position = 1;
+            }
+
+            // Calculate the stability suffix
+            $stabilitySuffix = '';
+            if (empty($matches[5]) && empty($matches[7])) {
+                $stabilitySuffix .= '-dev';
+            }
+
+            $lowVersion = $this->normalize(substr($constraint.$stabilitySuffix, 1));
+            $lowerBound = new Constraint('>=', $lowVersion);
+
+            // For upper bound, we increment the position of one more significance,
+            // but highPosition = 0 would be illegal
+            $highPosition = max(1, $position - 1);
+            $highVersion = $this->manipulateVersionString($matches, $highPosition, 1).'-dev';
+            $upperBound = new Constraint('<', $highVersion);
+
+            return [
+                $lowerBound,
+                $upperBound,
+            ];
+        }
+
+        // Caret Range
+        //
+        // Allows changes that do not modify the left-most non-zero digit in the [major, minor, patch] tuple.
+        // In other words, this allows patch and minor updates for versions 1.0.0 and above, patch updates for
+        // versions 0.X >=0.1.0, and no updates for versions 0.0.X
+        if (preg_match('{^\^'.$versionRegex.'($)}i', $constraint, $matches)) {
+            // Work out which position in the version we are operating at
+            if ('0' !== $matches[1] || '' === $matches[2] || null === $matches[2]) {
+                $position = 1;
+            } elseif ('0' !== $matches[2] || '' === $matches[3] || null === $matches[3]) {
+                $position = 2;
+            } else {
+                $position = 3;
+            }
+
+            // Calculate the stability suffix
+            $stabilitySuffix = '';
+            if (empty($matches[5]) && empty($matches[7])) {
+                $stabilitySuffix .= '-dev';
+            }
+
+            $lowVersion = $this->normalize(substr($constraint.$stabilitySuffix, 1));
+            $lowerBound = new Constraint('>=', $lowVersion);
+
+            // For upper bound, we increment the position of one more significance,
+            // but highPosition = 0 would be illegal
+            $highVersion = $this->manipulateVersionString($matches, $position, 1).'-dev';
+            $upperBound = new Constraint('<', $highVersion);
+
+            return [
+                $lowerBound,
+                $upperBound,
+            ];
+        }
+
+        // X Range
+        //
+        // Any of X, x, or * may be used to "stand in" for one of the numeric values in the [major, minor, patch] tuple.
+        // A partial version range is treated as an X-Range, so the special character is in fact optional.
+        if (preg_match('{^v?(\d++)(?:\.(\d++))?(?:\.(\d++))?(?:\.[xX*])++$}', $constraint, $matches)) {
+            if (isset($matches[3]) && '' !== $matches[3] && null !== $matches[3]) {
+                $position = 3;
+            } elseif (isset($matches[2]) && '' !== $matches[2] && null !== $matches[2]) {
+                $position = 2;
+            } else {
+                $position = 1;
+            }
+
+            $lowVersion = $this->manipulateVersionString($matches, $position).'-dev';
+            $highVersion = $this->manipulateVersionString($matches, $position, 1).'-dev';
+
+            if ($lowVersion === '0.0.0.0-dev') {
+                return [new Constraint('<', $highVersion)];
+            }
+
+            return [
+                new Constraint('>=', $lowVersion),
+                new Constraint('<', $highVersion),
+            ];
+        }
+
+        // Hyphen Range
+        //
+        // Specifies an inclusive set. If a partial version is provided as the first version in the inclusive range,
+        // then the missing pieces are replaced with zeroes. If a partial version is provided as the second version in
+        // the inclusive range, then all versions that start with the supplied parts of the tuple are accepted, but
+        // nothing that would be greater than the provided tuple parts.
+        if (preg_match('{^(?P<from>'.$versionRegex.') +- +(?P<to>'.$versionRegex.')($)}i', $constraint, $matches)) {
+            // Calculate the stability suffix
+            $lowStabilitySuffix = '';
+            if (empty($matches[6]) && empty($matches[8])) {
+                $lowStabilitySuffix = '-dev';
+            }
+
+            $lowVersion = $this->normalize($matches['from']);
+            $lowerBound = new Constraint('>=', $lowVersion.$lowStabilitySuffix);
+
+            $empty = function ($x) {
+                return ($x === 0 || $x === '0') ? false : empty($x);
+            };
+
+            if ((!$empty($matches[11]) && !$empty($matches[12])) || !empty($matches[14]) || !empty($matches[16])) {
+                $highVersion = $this->normalize($matches['to']);
+                $upperBound = new Constraint('<=', $highVersion);
+            } else {
+                $highMatch = ['', $matches[10], $matches[11], $matches[12], $matches[13]];
+                $highVersion = $this->manipulateVersionString($highMatch, $empty($matches[11]) ? 1 : 2, 1).'-dev';
+                $upperBound = new Constraint('<', $highVersion);
+            }
+
+            return [
+                $lowerBound,
+                $upperBound,
+            ];
+        }
+
+        // Basic Comparators
+        if (preg_match('{^(<>|!=|>=?|<=?|==?)?\s*(.*)}', $constraint, $matches)) {
+            try {
+                $version = $this->normalize($matches[2]);
+
+                if (!empty($stabilityModifier) && $this->parseStability($version) === 'stable') {
+                    $version .= '-'.$stabilityModifier;
+                } elseif ('<' === $matches[1] || '>=' === $matches[1]) {
+                    if (!preg_match('/-'.self::$modifierRegex.'$/', strtolower($matches[2]))) {
+                        if (substr($matches[2], 0, 4) !== 'dev-') {
+                            $version .= '-dev';
+                        }
+                    }
+                }
+
+                return [new Constraint($matches[1] ?: '=', $version)];
+            } catch (\Exception $e) {
+            }
+        }
+
+        $message = 'Could not parse version constraint '.$constraint;
+        if (isset($e)) {
+            $message .= ': '.$e->getMessage();
+        }
+
+        throw new \UnexpectedValueException($message);
+    }
+
+    /**
+     * Increment, decrement, or simply pad a version number.
+     *
+     * Support function for {@link parseConstraint()}
+     *
+     * @param array  $matches   Array with version parts in array indexes 1,2,3,4
+     * @param int    $position  1,2,3,4 - which segment of the version to increment/decrement
+     * @param int    $increment
+     * @param string $pad       The string to pad version parts after $position
+     *
+     * @return string The new version
+     */
+    private function manipulateVersionString($matches, $position, $increment = 0, $pad = '0')
+    {
+        for ($i = 4; $i > 0; --$i) {
+            if ($i > $position) {
+                $matches[$i] = $pad;
+            } elseif ($i === $position && $increment) {
+                $matches[$i] += $increment;
+                // If $matches[$i] was 0, carry the decrement
+                if ($matches[$i] < 0) {
+                    $matches[$i] = $pad;
+                    --$position;
+
+                    // Return null on a carry overflow
+                    if ($i === 1) {
+                        return;
+                    }
+                }
+            }
+        }
+
+        return $matches[1].'.'.$matches[2].'.'.$matches[3].'.'.$matches[4];
+    }
+
+    /**
+     * Expand shorthand stability string to long version.
+     *
+     * @param string $stability
+     *
+     * @return string
+     */
+    private function expandStability($stability)
+    {
+        $stability = strtolower($stability);
+
+        switch ($stability) {
+            case 'a':
+                return 'alpha';
+            case 'b':
+                return 'beta';
+            case 'p':
+            case 'pl':
+                return 'patch';
+            case 'rc':
+                return 'RC';
+            default:
+                return $stability;
+        }
+    }
+}
+
+set_error_handler(
+    function ($errno, $errstr, $errfile, $errline) {
+        if (error_reporting() !== 0) {
+            throw new RuntimeException("{$errstr}\n\nFile: {$errfile}\nLine: {$errline}");
+        }
+    },
+    -1
+    );
+error_reporting(-1);
+
+try {
+    $composerRunner = new ComposerRunner();
+
+    return $composerRunner->run();
+} catch (RuntimeException $x) {
+    fprintf(STDERR, rtrim($x->getMessage())."\n");
+    exit(1);
+} finally {
+    restore_error_handler();
+}

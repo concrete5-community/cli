@@ -1,4 +1,6 @@
-## concrete5 wrapper script
+# concrete5 Command Line Interface helper tools
+
+## concrete5 wrapper
 
 This repository contains two shell scripts (`c5` for POSIX shells, `c5.bat` for Windows) that you can place in a directory of your path (for example `/usr/local/bin` for POSIX shells, or `C:\Windows\System32` for Windows).
 
@@ -39,3 +41,31 @@ Instead of copying the `c5` script to a directory of your path, you can also *so
 ```
 
 Once you have reloaded your shell, you'll have the `c5` function available.
+
+
+## composer wrapper for package dependencies
+
+When writing packages for concrete5, you may require composer libraries.
+When using a composer-based concrete5 installation, this is not a problem, since composer will handle flawlessly your dependencies, and create an autoloader for you.
+
+Problems arise when your package is going to be installed without composer, and you need to provide the composer libraries togheter with your package.
+
+For example, let's assume that you have in your package `composer.json` file these requirements:
+
+```json
+{
+    "require": {
+        "concrete5/core": "^8.5.1",
+        "some_vendor/some_package": "1"
+    }
+}
+```
+
+This is totally legal: you are telling composer that your package requires concrete5 version 8.5.1 (or any later 8.x version), and that you need the `some_vendor/some_package` package.
+By the way, if you run a `composer install` because you want to distribute your package, composer will download concrete5 and install it in your vendor directory, which of course you don't want to.
+
+Another problem arises when your package requires (directly or indirectly) a library that's already included in concrete5 vendor directory.
+That leads to having to having two running copies of the same library (one in the concrete5 vendor directory, and one in your package vendor directory). This is a waste of space, and the actual version being used may be undetermined.
+
+To avoid these problems, you can run the `composerpkg` command included in this repository (for Windows users, you'll also need the `composerpkg.bat` file - to be saved in the same directory as the `composerpkg` file).
+`composerpkg` accepts the same arguments accepted by the plain `composer` command, but when you install/update the dependencies, you won't have duplicated stuff in your vendor directory.
