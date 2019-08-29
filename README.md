@@ -42,6 +42,22 @@ Instead of copying the `c5` script to a directory of your path, you can also *so
 
 Once you have reloaded your shell, you'll have the `c5` function available.
 
+### Windows-specific details
+
+At least under Windows 7, the c5 script is recognized when in `C:\Windows\System32` it doesn't necessarily work for the composerpkg script (*see below for details about composerpkg*)
+
+The first issue is that the script might be locked by the system.
+
+**Click on the composerpkg script and bring up the properties screen. At the bottom you should see an option to unlock it if it's locked.**
+
+Generally speaking it is probably better to put both your scripts in a custom folder, make sure neither composerpkg or c5 are locked by the system, and add your custom folder to your path.
+
+For instance:
+
+- Add c5, c5.bat, composerpkg and composerpkg.bat to `C:\Windows\Dev\Util\Bin`
+- Then add your folder `C:\Windows\Dev\Util\Bin` to your path.
+
+You can [find out how to add a folder to your Path on this page](https://www.java.com/en/download/help/path.xml "Add a folder to your Windows Path") (it's Java specific but the process is the same for any folder) 
 
 ## composer wrapper for package dependencies
 
