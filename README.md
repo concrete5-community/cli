@@ -54,8 +54,8 @@ Generally speaking it is probably better to put both your scripts in a custom fo
 
 For instance:
 
-- Add c5, c5.bat, composerpkg and composerpkg.bat to `C:\Windows\Dev\Util\Bin` (create the folder)
-- Then add your folder `C:\Windows\Dev\Util\Bin` to your path.
+- Add c5, c5.bat, composerpkg and composerpkg.bat to `C:\Dev\Util\Bin` (create the folder)
+- Then add your folder `C:\Dev\Util\Bin` to your path.
 
 You can [find out how to add a folder to your Path on this page](https://www.java.com/en/download/help/path.xml "Add a folder to your Windows Path") (it's Java specific but the process is the same for any folder) 
 
