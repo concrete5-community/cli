@@ -99,13 +99,11 @@ class ComposerRunner
         file_put_contents($patchedComposerJsonFile, json_encode($composerJsonData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
         try {
             putenv("COMPOSER={$patchedComposerJsonFileName}");
-            echo "\nCOMPOSER=$patchedComposerJsonFileName\n";
             $cmd = 'composer';
             foreach ($this->arguments->getList() as $arg) {
                 $cmd .= ' '.escapeshellarg($arg);
             }
             $rc = -1;
-            echo "\n$cmd\n";
             passthru($cmd, $rc);
 
             return $rc;
