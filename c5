@@ -53,11 +53,6 @@ c5_getCliEntrypoint () {
         unset -v __C5_TMPVAR
         return 1
     fi
-    if test -f "${__C5_TMPVAR}concrete/bin/concrete5.php"; then
-        printf '%sconcrete/bin/concrete5.php' "${__C5_TMPVAR}"
-        unset -v __C5_TMPVAR
-        return 0
-    fi
     if test -f "${__C5_TMPVAR}concrete/bin/concrete5"; then
         printf '%sconcrete/bin/concrete5' "${__C5_TMPVAR}"
         unset -v __C5_TMPVAR
