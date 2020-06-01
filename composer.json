@@ -1,0 +1,9 @@
+{
+  "name": "concrete5/cli",
+  "license": "MIT",
+  "description": "concrete5 CLI tool",
+  "type": "project",
+  "keywords": [ "concrete5", "CLI", "concreteCMS" ],
+  "homepage": "https://www.concrete5.org/",
+  "bin": ["c5"],
+}
