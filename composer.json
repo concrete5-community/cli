@@ -5,5 +5,5 @@
   "type": "project",
   "keywords": [ "concrete5", "CLI", "concreteCMS" ],
   "homepage": "https://www.concrete5.org/",
-  "bin": ["c5"],
+  "bin": ["c5"]
 }
