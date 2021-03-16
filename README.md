@@ -1,4 +1,8 @@
-# concrete5 Command Line Interface helper tools
+# This project is archived!
+
+Please see https://github.com/concrete5/console for current active development on the Concrete console.
+
+-----
 
 ## concrete5 wrapper
 
