@@ -74,7 +74,7 @@ c5 () (
     if test -z "$__C5_TMPVAR"; then
         return 255
     fi
-    if test -z "$C5_SUDOAS" || test "$C5_SUDOAS" = "$(whoami)"; then
+    if test -z "${C5_SUDOAS:-}" || test "${C5_SUDOAS:-}" = "$(whoami)"; then
         "$__C5_TMPVAR" "$@"
         return $?
     fi
