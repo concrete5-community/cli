@@ -1,6 +1,6 @@
-# This project is archived!
+# Unifficial concrete5 Command Line Interface tools
 
-Please see https://github.com/concrete5/console for current active development on the Concrete console.
+You may also be interested in the official CLI tool, available at https://github.com/concrete5/console
 
 -----
 
