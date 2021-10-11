@@ -85,32 +85,39 @@ c5 () (
 # Check if this file has been "sourced".
 # Greatly inspired by https://stackoverflow.com/a/28776166
 __C5_TMPVAR=0
-if test -n "${ZSH_EVAL_CONTEXT:-}"; then
-    # zsh - Z-Shell
-    case "$ZSH_EVAL_CONTEXT" in
-        *:file)
-            __C5_TMPVAR=1
-            ;;
-        *::file:cmdsubst)
-            __C5_TMPVAR=1
-            ;;
-    esac
-elif test -n "${KSH_VERSION:-}"; then 
-    # kzh - Korn shell
-    if test $(cd -- "$(dirname -- "$0")" && printf '%s' "${PWD%/}/")$(basename -- "$0") != "${.sh.file}"; then
+case "${C5_FORCE_SOURCE:-}" in
+    1 | y* | Y*)
         __C5_TMPVAR=1
-    fi
-elif test -n "${BASH_VERSION:-}"; then
-    # bash - Bourne Again Shell
-    (return 2>/dev/null) && __C5_TMPVAR=1 || true
-else
-    # other
-    case "$0" in
-        sh|*ash)
-            __C5_TMPVAR=1
-            ;;
-    esac
-fi
+        ;;
+    *)
+        if test -n "${ZSH_EVAL_CONTEXT:-}"; then
+            # zsh - Z-Shell
+            case "$ZSH_EVAL_CONTEXT" in
+                *:file)
+                    __C5_TMPVAR=1
+                    ;;
+                *::file:cmdsubst)
+                    __C5_TMPVAR=1
+                    ;;
+            esac
+        elif test -n "${KSH_VERSION:-}"; then 
+            # kzh - Korn shell
+            if test $(cd -- "$(dirname -- "$0")" && printf '%s' "${PWD%/}/")$(basename -- "$0") != "${.sh.file}"; then
+                __C5_TMPVAR=1
+            fi
+        elif test -n "${BASH_VERSION:-}"; then
+            # bash - Bourne Again Shell
+            (return 2>/dev/null) && __C5_TMPVAR=1 || true
+        else
+            # other
+            case "$0" in
+                sh|*ash)
+                    __C5_TMPVAR=1
+                    ;;
+            esac
+        fi
+        ;;
+esac
 
 if test $__C5_TMPVAR -eq 0; then
     unset -v __C5_TMPVAR
