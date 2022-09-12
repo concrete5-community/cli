@@ -89,3 +89,20 @@ That leads to having to having two running copies of the same library (one in th
 
 To avoid these problems, you can run the `composerpkg` command included in this repository (for Windows users, you'll also need the `composerpkg.bat` file - to be saved in the same directory as the `composerpkg` file).
 `composerpkg` accepts the same arguments accepted by the plain `composer` command, but when you install/update the dependencies, you won't have duplicated stuff in your vendor directory.
+
+
+## Using the scripts in Docker images
+
+You can download the scripts on the fly, like this:
+
+```Dockerfile
+ADD https://raw.githubusercontent.com/concrete5/cli/master/c5 /usr/bin/
+
+RUN chmod +x /usr/bin/c5
+```
+
+You can also copy them from a Docker image, so that your build process doesn't have to download the scripts every time you need them:
+
+```Dockerfile
+COPY --from=concrete5/cli /usr/bin/c5 /usr/bin/
+```
