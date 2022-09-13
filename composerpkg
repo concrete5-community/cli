@@ -77,6 +77,21 @@ class ComposerRunner
     }
 
     /**
+     * Get the binary name of Composer
+     *
+     * We'll inspect the COMPOSERPKG_BIN environment variable, falling back to 'composer'
+     *
+     * @return string
+     */
+    private function getComposerBin()
+    {
+        if (isset($_ENV['COMPOSERPKG_BIN']) && is_string($_ENV['COMPOSERPKG_BIN']) && $_ENV['COMPOSERPKG_BIN'] !== '') {
+            return $_ENV['COMPOSERPKG_BIN'];
+        }
+        return 'composer';
+    }
+
+    /**
      * Execute composer using a composer.json file with the specified contents.
      *
      * @param array $composerJsonData
@@ -99,7 +114,7 @@ class ComposerRunner
         file_put_contents($patchedComposerJsonFile, json_encode($composerJsonData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
         try {
             putenv("COMPOSER={$patchedComposerJsonFileName}");
-            $cmd = 'composer';
+            $cmd = escapeshellarg($this->getComposerBin());
             foreach ($this->arguments->getList() as $arg) {
                 $cmd .= ' '.escapeshellarg($arg);
             }

@@ -89,3 +89,24 @@ That leads to having to having two running copies of the same library (one in th
 
 To avoid these problems, you can run the `composerpkg` command included in this repository (for Windows users, you'll also need the `composerpkg.bat` file - to be saved in the same directory as the `composerpkg` file).
 `composerpkg` accepts the same arguments accepted by the plain `composer` command, but when you install/update the dependencies, you won't have duplicated stuff in your vendor directory.
+
+By default, `composerpkg` will run Composer by invoking the `composer` command.
+If you need to customize it, you can use the `COMPOSERPKG_BIN` environment variable.
+For example:
+
+```sh
+# On Linux & Mac
+COMPOSERPKG_BIN='/path/to/your/composer' composerpkg ...
+# or
+COMPOSERPKG_BIN='/path/to/your/composer'
+export COMPOSERPKG_BIN
+composerpkg ...
+
+# On Windows (with cmd.exe)
+set COMPOSERPKG_BIN="C:\path\to\your\composer"
+composerpkg ...
+
+# On Windows (with PowerShell)
+$Env:COMPOSERPKG_BIN='C:\path\to\your\composer'
+composerpkg ...
+```
