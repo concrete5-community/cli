@@ -110,11 +110,18 @@ class ComposerRunner
                 break;
             }
         }
-        $prevComposerEnv = getenv('COMPOSER');
+        $prevComposerEnv = isset($_ENV['COMPOSER']) ? $_ENV['COMPOSER'] : false;
+        if ($prevComposerEnv === false) {
+            $prevComposerEnv = getenv('COMPOSER');
+        }
         file_put_contents($patchedComposerJsonFile, json_encode($composerJsonData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
         try {
             putenv("COMPOSER={$patchedComposerJsonFileName}");
+            $_ENV['COMPOSER'] = $patchedComposerJsonFileName;
             $cmd = escapeshellarg($this->getComposerBin());
+            if (DIRECTORY_SEPARATOR === '/') {
+                $cmd = "COMPOSER={$patchedComposerJsonFileName} {$cmd}";
+            }
             foreach ($this->arguments->getList() as $arg) {
                 $cmd .= ' '.escapeshellarg($arg);
             }
@@ -129,8 +136,10 @@ class ComposerRunner
             }
             if ($prevComposerEnv === false) {
                 putenv('COMPOSER');
+                unset($_ENV['COMPOSER']);
             } else {
                 putenv("COMPOSER={$prevComposerEnv}");
+                $_ENV['COMPOSER'] = $prevComposerEnv;
             }
         }
     }
@@ -1445,7 +1454,7 @@ set_error_handler(
         }
     },
     -1
-    );
+);
 error_reporting(-1);
 
 try {
