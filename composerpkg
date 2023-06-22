@@ -7,6 +7,11 @@
 class ComposerRunner
 {
     /**
+     * @var bool
+     */
+    private $verbose;
+
+    /**
      * @var Arguments
      */
     private $arguments;
@@ -30,6 +35,11 @@ class ComposerRunner
      */
     public function __construct(Arguments $arguments = null, CoreVersions $coreVersions = null, VersionParser $versionParser = null)
     {
+        $verbose = getenv('COMPOSERPKG_VERBOSE');
+        if ($verbose === false) {
+            $verbose = isset($_ENV['COMPOSERPKG_VERBOSE']) ? $_ENV['COMPOSERPKG_VERBOSE'] : false;
+        }
+        $this->verbose = $verbose === '1';
         $this->arguments = $arguments ?: new Arguments();
         $this->coreVersions = $coreVersions ?: new CoreVersions();
         $this->versionParser = $versionParser ?: new VersionParser();
@@ -44,6 +54,9 @@ class ComposerRunner
     {
         $packageInfo = new PackageInfo($this->arguments->getPackageDirectory(), $this->coreVersions, $this->versionParser);
         $minimumCoreVersion = $packageInfo->getMinimumCoreVersion();
+        if ($this->verbose) {
+            echo "Minimum core version: {$minimumCoreVersion}\n";
+        }
         $corePackages = $this->coreVersions->getPackagesForCoreVersion($minimumCoreVersion);
         $newJsonData = $this->patchComposerJson($minimumCoreVersion, $packageInfo->getComposerJsonData(), $corePackages);
 
@@ -100,6 +113,10 @@ class ComposerRunner
      */
     private function runWith(array $composerJsonData)
     {
+        $json = json_encode($composerJsonData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        if ($this->verbose) {
+            echo "Running composer with the following composer.json file:\n{$json}\n";
+        }
         $prefix = $this->arguments->getPackageDirectory().'/';
         for ($i = 0;; ++$i) {
             $basename = "composer-patched-{$i}";
@@ -114,7 +131,7 @@ class ComposerRunner
         if ($prevComposerEnv === false) {
             $prevComposerEnv = getenv('COMPOSER');
         }
-        file_put_contents($patchedComposerJsonFile, json_encode($composerJsonData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        file_put_contents($patchedComposerJsonFile, $json);
         try {
             putenv("COMPOSER={$patchedComposerJsonFileName}");
             $_ENV['COMPOSER'] = $patchedComposerJsonFileName;
@@ -124,6 +141,9 @@ class ComposerRunner
             }
             foreach ($this->arguments->getList() as $arg) {
                 $cmd .= ' '.escapeshellarg($arg);
+            }
+            if ($this->verbose) {
+                echo "Launching command\n{$cmd}\n";
             }
             $rc = -1;
             passthru($cmd, $rc);
@@ -258,7 +278,7 @@ class CoreVersions
         if (self::$taggedVersions === null) {
             $output = [];
             $rc = -1;
-            exec('git ls-remote --tags https://github.com/concrete5/concrete5.git', $output, $rc);
+            exec('git ls-remote --tags https://github.com/concretecms/concretecms.git', $output, $rc);
             if ($rc !== 0) {
                 throw new RuntimeException("Failed to retrieve the list of available core versions:\n".trim(implode("\n", $output)));
             }
@@ -383,14 +403,14 @@ class CoreVersions
         } else {
             throw new RuntimeException("Unrecognized core version: {$coreVersion}");
         }
-        list($mayor) = explode('.', $coreVersion, 2);
-        $result = 'https://raw.githubusercontent.com/concrete5/concrete5/';
+        list($major) = explode('.', $coreVersion, 2);
+        $result = 'https://raw.githubusercontent.com/concretecms/concretecms/';
         if ($commit === '') {
             $result .= $coreVersion;
         } else {
             $result .= $commit;
         }
-        if ($mayor === '5') {
+        if ($major === '5') {
             $result .= '/web/concrete/composer.lock';
         } else {
             $result .= '/composer.lock';
@@ -963,7 +983,7 @@ class VersionParser
         if ('dev-' === substr($version, 0, 4) || '-dev' === substr($version, -4)) {
             return 'dev';
         }
-
+        $match = null;
         preg_match('{'.self::$modifierRegex.'(?:\+.*)?$}i', strtolower($version), $match);
         if (!empty($match[3])) {
             return 'dev';
@@ -1014,6 +1034,7 @@ class VersionParser
         }
 
         // strip off aliasing
+        $match = null;
         if (preg_match('{^([^,\s]++) ++as ++([^,\s]++)$}', $version, $match)) {
             $version = $match[1];
         }
@@ -1027,13 +1048,13 @@ class VersionParser
         if ('dev-' === strtolower(substr($version, 0, 4))) {
             return 'dev-'.substr($version, 4);
         }
-
         // strip off build metadata
         if (preg_match('{^([^,\s+]++)\+[^\s]++$}', $version, $match)) {
             $version = $match[1];
         }
 
         // match classical versioning
+        $matches = null;
         if (preg_match('{^v?(\d{1,5})(\.\d++)?(\.\d++)?(\.\d++)?'.self::$modifierRegex.'$}i', $version, $matches)) {
             $version = $matches[1]
             .(!empty($matches[2]) ? $matches[2] : '.0')
@@ -1089,6 +1110,7 @@ class VersionParser
      */
     public function parseNumericAliasPrefix($branch)
     {
+        $matches = null;
         if (preg_match('{^(?P<version>(\d++\\.)*\d++)(?:\.x)?-dev$}i', $branch, $matches)) {
             return $matches['version'].'.';
         }
@@ -1111,6 +1133,7 @@ class VersionParser
             return $this->normalize($name);
         }
 
+        $matches = null;
         if (preg_match('{^v?(\d++)(\.(?:\d++|[xX*]))?(\.(?:\d++|[xX*]))?(\.(?:\d++|[xX*]))?$}i', $name, $matches)) {
             $version = '';
             for ($i = 1; $i < 5; ++$i) {
@@ -1133,7 +1156,7 @@ class VersionParser
     public function parseConstraints($constraints)
     {
         $prettyConstraint = $constraints;
-
+        $match = null;
         if (preg_match('{^([^,\s]*?)@('.implode('|', self::$stabilities).')$}i', $constraints, $match)) {
             $constraints = empty($match[1]) ? '*' : $match[1];
         }
@@ -1203,6 +1226,7 @@ class VersionParser
      */
     private function parseConstraint($constraint)
     {
+        $match = null;
         if (preg_match('{^([^,\s]+?)@('.implode('|', self::$stabilities).')$}i', $constraint, $match)) {
             $constraint = $match[1];
             if ($match[2] !== 'stable') {
@@ -1221,6 +1245,7 @@ class VersionParser
         // Like wildcard constraints, unsuffixed tilde constraints say that they must be greater than the previous
         // version, to ensure that unstable instances of the current version are allowed. However, if a stability
         // suffix is added to the constraint, then a >= match on the current version is used instead.
+        $matches = null;
         if (preg_match('{^~>?'.$versionRegex.'$}i', $constraint, $matches)) {
             if (substr($constraint, 0, 2) === '~>') {
                 throw new \UnexpectedValueException(
@@ -1358,6 +1383,7 @@ class VersionParser
         }
 
         // Basic Comparators
+        $error = null;
         if (preg_match('{^(<>|!=|>=?|<=?|==?)?\s*(.*)}', $constraint, $matches)) {
             try {
                 $version = $this->normalize($matches[2]);
@@ -1374,12 +1400,13 @@ class VersionParser
 
                 return [new Constraint($matches[1] ?: '=', $version)];
             } catch (\Exception $e) {
+                $error = $e;
             }
         }
 
         $message = 'Could not parse version constraint '.$constraint;
-        if (isset($e)) {
-            $message .= ': '.$e->getMessage();
+        if ($error !== null) {
+            $message .= ': '.$error->getMessage();
         }
 
         throw new \UnexpectedValueException($message);
