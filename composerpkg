@@ -52,6 +52,10 @@ class ComposerRunner
      */
     public function run()
     {
+        if ($this->verbose) {
+            passthru(escapeshellarg($this->getPHPBin()) . ' --version');
+            passthru(escapeshellarg($this->getComposerBin()) . ' --version');
+        }
         $packageInfo = new PackageInfo($this->arguments->getPackageDirectory(), $this->coreVersions, $this->versionParser);
         $minimumCoreVersion = $packageInfo->getMinimumCoreVersion();
         if ($this->verbose) {
@@ -90,7 +94,17 @@ class ComposerRunner
     }
 
     /**
-     * Get the binary name of Composer
+     * Get the binary name of PHP.
+     *
+     * @return string
+     */
+    private function getPHPBin()
+    {
+        return 'php';
+    }
+
+    /**
+     * Get the binary name of Composer.
      *
      * We'll inspect the COMPOSERPKG_BIN environment variable, falling back to 'composer'
      *
