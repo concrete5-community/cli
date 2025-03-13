@@ -88,6 +88,8 @@ class ComposerRunner
             }
             $replacements = $originalPackageReplacement + $replacements;
         }
+        $replacements += $this->extractConcretePackageDependencies($packageComposerJsonData, PackageInfo::COMPOSERJSON_KEY_REQUIRE);
+        $replacements += $this->extractConcretePackageDependencies($packageComposerJsonData, PackageInfo::COMPOSERJSON_KEY_REQUIREDEV);
         $packageComposerJsonData['replace'] = $replacements;
 
         return $packageComposerJsonData;
@@ -176,6 +178,77 @@ class ComposerRunner
                 $_ENV['COMPOSER'] = $prevComposerEnv;
             }
         }
+    }
+
+    /**
+     * @param string $key
+     *
+     * @return array
+     */
+    private function extractConcretePackageDependencies(array $packageComposerJsonData, $key)
+    {
+        $result = [];
+        if (!isset($packageComposerJsonData[$key])) {
+            return $result;
+        }
+        foreach ($packageComposerJsonData[$key] as $handle => $constraints) {
+            if ($this->checkConcretePackageDependency($handle)) {
+                $result[$handle] = '*';
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param string $handle
+     *
+     * @return bool
+     */
+    private function checkConcretePackageDependency($handle)
+    {
+        if (strcasecmp($handle, PackageInfo::CORE_PACKAGE_HANDLE) === 0) {
+            return false;
+        }
+        if (preg_match('/^(php|ext-.*)$/i', $handle)) {
+            return false;
+        }
+        $infoUrl = "https://repo.packagist.org/p2/{$handle}.json";
+        $context = stream_context_create(
+            [
+                'http' => [
+                    'method' => 'GET',
+                    'follow_location' => 1,
+                    'max_redirects' => 20,
+                    'ignore_errors' => false,
+                ],
+            ]
+        );
+        $infoJson = file_get_contents($infoUrl, false, $context);
+        $infoData = json_decode($infoJson, true);
+        if (!is_array($infoData)) {
+            throw new RuntimeException("Invalid contents of {$infoUrl} (not an array)");
+        }
+        if (!isset($infoData['packages']) || !is_array($infoData['packages'])) {
+            throw new RuntimeException("Invalid contents of {$infoUrl} (missing package list");
+        }
+        if (!isset($infoData['packages'][$handle])) {
+            return false;
+        }
+        $packageVersions = $infoData['packages'][$handle];
+        if (!is_array($packageVersions)) {
+            throw new RuntimeException("Invalid contents of {$infoUrl} (the package versions are not an array)");
+        }
+        foreach ($packageVersions as $packageVersion) {
+            if (!is_array($packageVersion)) {
+                throw new RuntimeException("Invalid contents of {$infoUrl} (a package version is not an array)");
+            }
+            if (isset($packageVersion['type']) && in_array($packageVersion['type'], ['concrete5-core', 'concrete5-package', 'concrete5-theme', 'concrete5-block', 'concrete5-update', 'concretecms-core', 'concretecms-package', 'concretecms-theme', 'concretecms-block', 'concretecms-update'], true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 
