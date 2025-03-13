@@ -1054,7 +1054,7 @@ class VersionParser
         }
 
         // match master-like branches
-        if (preg_match('{^(?:dev-)?(?:master|trunk|default)$}i', $version)) {
+        if (preg_match('{^(?:dev-)?(?:master|main|trunk|default)$}i', $version)) {
             return '9999999-dev';
         }
 
